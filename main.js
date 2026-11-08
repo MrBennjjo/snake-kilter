@@ -1,6 +1,7 @@
 import { Snake } from './game.js';
 import { KilterBle } from './ble.js';
 import { loadLayout } from './layout.js';
+import { gameOverFrame } from './text.js';
 
 const $ = id => document.getElementById(id);
 const layout = await loadLayout();
@@ -22,8 +23,17 @@ addEventListener('unhandledrejection', e => log(`Error: ${e.reason?.message ?? e
 log(layout.placeholder ? 'Using PLACEHOLDER layout (no layout.json)' : `Layout loaded: ${layout.cols}x${layout.rows}`);
 if (!navigator.bluetooth) log('Web Bluetooth not available (use Chrome on Android, over https)');
 
+// The on-screen preview is redundant once the board is lit, so hide it on connect
+// (and show it again on disconnect). The button toggles it manually.
+function setPreview(show) {
+  canvas.hidden = !show;
+  $('preview').textContent = show ? 'Hide preview' : 'Show preview';
+}
+$('preview').onclick = () => setPreview(canvas.hidden);
+
 const ble = new KilterBle(name => {
   status.textContent = ble.connected ? `Connected: ${name}` : 'Disconnected (simulator only)';
+  setPreview(!ble.connected);
 }, log);
 
 // Draw cells on the simulator canvas and push them to the board.
@@ -38,8 +48,9 @@ function draw(cells) {
   ble.show(leds);
 }
 
+let overScreen = false, overTimer;
 function render() {
-  draw(game.frame());
+  draw(overScreen ? gameOverFrame(game.score, layout.cols, layout.rows) : game.frame());
   $('score').textContent = `Score: ${game.score}${game.alive ? '' : ' — game over'}`;
 }
 
@@ -50,6 +61,8 @@ async function testPattern() {
   if (patternRunning) return;
   patternRunning = true;
   clearInterval(timer);
+  clearTimeout(overTimer);
+  overScreen = false;
   log('Test pattern: corners (TL white, TR green, BL blue, BR magenta)');
   const { cols, rows } = layout;
   draw([
@@ -71,12 +84,18 @@ let timer;
 function start() {
   if (patternRunning) return;
   clearInterval(timer);
+  clearTimeout(overTimer);
+  overScreen = false;
   game.reset();
   render();
   timer = setInterval(() => {
     game.tick();
     render();
-    if (!game.alive) clearInterval(timer);
+    if (!game.alive) {
+      clearInterval(timer);
+      // Show the red snake briefly, then the GAME OVER screen with the score.
+      overTimer = setTimeout(() => { overScreen = true; render(); }, 1500);
+    }
   }, 250);
 }
 
