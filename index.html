@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Snake Kilter</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <button id="connect">Connect board</button>
+  <span id="status">Not connected (simulator only)</span>
+</header>
+<canvas id="sim" aria-label="Simulator preview"></canvas>
+<div id="score">Score: 0</div>
+<div id="pad">
+  <button data-dir="up" class="up">▲</button>
+  <button data-dir="left" class="left">◀</button>
+  <button data-dir="right" class="right">▶</button>
+  <button data-dir="down" class="down">▼</button>
+</div>
+<div id="actions"><button id="restart">New game</button><button id="pattern">Test pattern</button></div>
+<pre id="log" aria-label="Log"></pre>
+<script type="module" src="main.js"></script>
+</body>
+</html>
