@@ -74,7 +74,10 @@ export class KilterBle {
           const char = await service.getCharacteristic(UART_TX);
           const p = char.properties;
           this.log(`TX characteristic: write=${p.write} writeWithoutResponse=${p.writeWithoutResponse}`);
-          this.withResponse = !p.writeWithoutResponse;
+          // Prefer acknowledged writes (as Climbdex does): un-acknowledged 20-byte chunks
+          // can be dropped by the board, which garbles any message longer than one chunk.
+          this.withResponse = p.write || !p.writeWithoutResponse;
+          this.log(`Using ${this.withResponse ? 'acknowledged' : 'fast (unacknowledged)'} writes`);
           this.char = char;
           this.frames = 0;
           this.connectedAt = Date.now();
@@ -117,13 +120,17 @@ export class KilterBle {
       try {
         while (this.pending) {
           const frame = this.pending; this.pending = null;
+          const t0 = performance.now();
+          let chunks = 0;
           for (const msg of buildMessages(frame))
-            for (let i = 0; i < msg.length; i += BLE_CHUNK) {
+            for (let i = 0; i < msg.length; i += BLE_CHUNK, chunks++) {
               const chunk = new Uint8Array(msg.slice(i, i + BLE_CHUNK));
               if (this.withResponse) await this.char.writeValueWithResponse(chunk);
               else await this.char.writeValueWithoutResponse(chunk);
             }
-          if (++this.frames === 1) this.log(`First frame sent (${frame.length} LEDs)`);
+          // Log the first few frames so the log shows what the board was actually sent.
+          if (++this.frames <= 3)
+            this.log(`Frame ${this.frames}: ${frame.length} LEDs in ${chunks} chunk(s), ${Math.round(performance.now() - t0)} ms`);
         }
       } catch (e) { console.error('BLE write failed', e); this.log(`BLE write failed: ${e.message}`); }
       this.sending = false;
