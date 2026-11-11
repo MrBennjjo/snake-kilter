@@ -35,9 +35,12 @@ export function parseApiLevel(name = '') {
   return m ? Number(m[1]) : 2;
 }
 
+const ATTEMPTS = 4;
+
 export class KilterBle {
   constructor(onChange, log = () => {}) {
     this.onChange = onChange; this.log = log; this.char = null; this.frames = 0;
+    this.device = null; this.attaching = false; this.retryDelay = 1000;
   }
 
   get connected() { return !!this.char; }
@@ -50,14 +53,58 @@ export class KilterBle {
     const level = parseApiLevel(device.name);
     this.log(`Selected "${device.name}" (API level ${level})`);
     if (level !== 3) this.log(`WARNING: this app only speaks API level 3; LEDs may not work on level ${level}.`);
-    device.addEventListener('gattserverdisconnected', () => { this.char = null; this.log('Disconnected'); this.onChange(); });
-    this.log('Connecting GATT...');
-    const server = await device.gatt.connect();
-    const service = await server.getPrimaryService(UART_SERVICE);
-    this.log('Got UART service');
-    this.char = await service.getCharacteristic(UART_TX);
-    this.log('Got TX characteristic - ready');
-    this.onChange(device.name);
+    if (this.device !== device) {
+      this.device = device;
+      device.addEventListener('gattserverdisconnected', () => this.onDisconnect());
+    }
+    await this.attach();
+  }
+
+  // Android Chrome's first GATT connect often fails or drops straight away
+  // (status 133 / "GATT Server is disconnected"), so retry with a growing pause.
+  async attach() {
+    this.attaching = true;
+    try {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          this.log(`Connecting GATT (attempt ${attempt}/${ATTEMPTS})...`);
+          const server = await this.device.gatt.connect();
+          const service = await server.getPrimaryService(UART_SERVICE);
+          this.log('Got UART service');
+          const char = await service.getCharacteristic(UART_TX);
+          const p = char.properties;
+          this.log(`TX characteristic: write=${p.write} writeWithoutResponse=${p.writeWithoutResponse}`);
+          this.withResponse = !p.writeWithoutResponse;
+          this.char = char;
+          this.frames = 0;
+          this.connectedAt = Date.now();
+          this.log('Ready');
+          this.onChange(this.device.name);
+          return;
+        } catch (e) {
+          this.log(`Attempt ${attempt} failed: ${e.name}: ${e.message}`);
+          try { this.device.gatt.disconnect(); } catch { /* already down */ }
+          if (attempt >= ATTEMPTS) throw e;
+          await new Promise(r => setTimeout(r, this.retryDelay * attempt));
+        }
+      }
+    } finally { this.attaching = false; }
+  }
+
+  // An unexpected drop after a stable connection gets one automatic reconnect round.
+  // If the board drops us within a few seconds, don't loop: that points at the board
+  // rejecting us (or another phone grabbing it), so report it instead.
+  async onDisconnect() {
+    const wasConnected = !!this.char;
+    this.char = null;
+    if (this.attaching) return; // a failed attempt inside attach(); it handles retries
+    const secs = wasConnected ? ((Date.now() - this.connectedAt) / 1000).toFixed(1) : 0;
+    this.log(wasConnected ? `Disconnected after ${secs}s (${this.frames} frames sent)` : 'Disconnected');
+    this.onChange();
+    if (!wasConnected) return;
+    if (secs < 5) { this.log('Dropped too quickly to retry automatically. Tap Connect board.'); return; }
+    this.log('Trying to reconnect...');
+    try { await this.attach(); } catch (e) { this.log(`Reconnect gave up: ${e.message}. Tap Connect board.`); }
   }
 
   // leds: [{led: <position>, color: [r,g,b]}]. Writes are serialised; stale frames are dropped.
@@ -71,8 +118,11 @@ export class KilterBle {
         while (this.pending) {
           const frame = this.pending; this.pending = null;
           for (const msg of buildMessages(frame))
-            for (let i = 0; i < msg.length; i += BLE_CHUNK)
-              await this.char.writeValueWithoutResponse(new Uint8Array(msg.slice(i, i + BLE_CHUNK)));
+            for (let i = 0; i < msg.length; i += BLE_CHUNK) {
+              const chunk = new Uint8Array(msg.slice(i, i + BLE_CHUNK));
+              if (this.withResponse) await this.char.writeValueWithResponse(chunk);
+              else await this.char.writeValueWithoutResponse(chunk);
+            }
           if (++this.frames === 1) this.log(`First frame sent (${frame.length} LEDs)`);
         }
       } catch (e) { console.error('BLE write failed', e); this.log(`BLE write failed: ${e.message}`); }
